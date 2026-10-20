@@ -1,0 +1,304 @@
+{
+  "name": "Webhook ticket intake (lite)",
+  "nodes": [
+    {
+      "id": "notes",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        0
+      ],
+      "parameters": {
+        "content": "## Webhook ticket intake\n\nPOST JSON to the ops-ticket webhook. Header auth credential id is PLACEHOLDER_WEBHOOK_HEADER. A stored ticket is appended to the Tickets sheet (PLACEHOLDER_SHEET_ID) and sent to Telegram chat PLACEHOLDER_CHAT_ID.\n\nExample body:\n{\"title\":\"Checkout latency on app.example.com\",\"severity\":\"p2\",\"service\":\"checkout\",\"detail\":\"p95 above 800ms for 10 minutes. Host 192.0.2.20.\",\"reporter\":\"oncall@example.com\"}\n\nThis workflow does not page on disk fill, certificate expiry, or an HTTP probe.",
+        "height": 420,
+        "width": 500,
+        "color": 4
+      }
+    },
+    {
+      "id": "hook",
+      "name": "Ticket Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops-ticket",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER_WEBHOOK_HEADER",
+          "name": "Ops ticket header"
+        }
+      }
+    },
+    {
+      "id": "encode",
+      "name": "Encode Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const item = $input.first().json || {};\nconst payload = item.body && typeof item.body === \"object\" ? item.body : item;\nconst record = {\n  title: payload.title || \"\",\n  severity: payload.severity || \"\",\n  service: payload.service || \"\",\n  detail: payload.detail || \"\",\n  reporter: payload.reporter || \"\"\n};\nreturn [{ json: { record_b64: Buffer.from(JSON.stringify(record)).toString(\"base64\") } }];\n"
+      }
+    },
+    {
+      "id": "remember",
+      "name": "Remember Ticket",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        560,
+        200
+      ],
+      "parameters": {
+        "command": "python3 /opt/ops-tickets/ticket_check.py remember --store /opt/ops-tickets/tickets.jsonl --record-b64 \"{{ $json.record_b64 }}\""
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "parse",
+      "name": "Parse Ticket",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const raw = $input.first().json.stdout || \"\";\nlet report;\ntry {\n  report = JSON.parse(raw);\n} catch (error) {\n  report = { ok: false, status: \"error\", classification: \"error\", subject: \"Helper output was not JSON\", message: String(error), stdout: raw };\n}\nreturn [{ json: report }];\n"
+      }
+    },
+    {
+      "id": "stored",
+      "name": "Is Stored",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "stored",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "stored",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "sheet",
+      "name": "Append Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1400,
+        40
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PLACEHOLDER_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "created_at": "={{ $json.created_at }}",
+            "severity": "={{ $json.severity }}",
+            "service": "={{ $json.service }}",
+            "title": "={{ $json.title }}",
+            "detail": "={{ $json.detail }}",
+            "reporter": "={{ $json.reporter }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_GOOGLE_SHEETS",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "telegram",
+      "name": "Notify Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1400,
+        240
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "PLACEHOLDER_CHAT_ID",
+        "text": "={{ $json.subject + '\\n\\n' + $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "PLACEHOLDER_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond Stored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1400,
+        440
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, id: $json.id, status: $json.status }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "name": "Respond Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1400,
+        640
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, status: $json.status, errors: $json.errors || [] }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Ticket Webhook": {
+      "main": [
+        [
+          {
+            "node": "Encode Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Encode Body": {
+      "main": [
+        [
+          {
+            "node": "Remember Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember Ticket": {
+      "main": [
+        [
+          {
+            "node": "Parse Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Ticket": {
+      "main": [
+        [
+          {
+            "node": "Is Stored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Stored": {
+      "main": [
+        [
+          {
+            "node": "Append Google Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Stored",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

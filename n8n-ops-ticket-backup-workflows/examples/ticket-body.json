@@ -1,0 +1,7 @@
+{
+  "title": "Checkout latency on app.example.com",
+  "severity": "p2",
+  "service": "checkout",
+  "detail": "p95 above 800ms for 10 minutes. Host 192.0.2.20.",
+  "reporter": "oncall@example.com"
+}

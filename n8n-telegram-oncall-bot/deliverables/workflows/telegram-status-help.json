@@ -1,0 +1,334 @@
+{
+  "name": "Telegram on-call status (lite)",
+  "nodes": [
+    {
+      "id": "notes",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        40
+      ],
+      "parameters": {
+        "content": "## Telegram status and help (lite)\n\nThis free subset answers /status and /help. /disk and /ack <id> are in the full workflow.\n\nBearer value: n8n environment variable STATUS_AGENT_TOKEN. Credential id on the Telegram nodes is PLACEHOLDER_TELEGRAM.",
+        "height": 420,
+        "width": 480,
+        "color": 4
+      }
+    },
+    {
+      "id": "trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        220
+      ],
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "PLACEHOLDER_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const item = $input.first().json;\nconst message = item.message || item.edited_message || {};\nconst text = String(message.text || \"\").trim();\nconst chat = message.chat || {};\nconst chatId = chat.id === undefined || chat.id === null ? \"\" : String(chat.id);\nconst parts = text.split(/\\s+/).filter(Boolean);\nlet head = (parts[0] || \"\").toLowerCase();\nconst at = head.indexOf(\"@\");\nif (at !== -1) head = head.slice(0, at);\nif (head.startsWith(\"/\")) head = head.slice(1);\nconst known = [\"status\", \"disk\", \"ack\", \"help\"];\nconst command = known.includes(head) ? head : \"unknown\";\nconst arg = command === \"ack\" ? (parts[1] || \"\") : \"\";\nreturn [{ json: { command, arg, chatId, rawText: text } }];\n"
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route Command",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        560,
+        220
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "route-status",
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "status",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "status"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "route-help",
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "help",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "help"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "fetch-status",
+      "name": "Fetch Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        40
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://127.0.0.1:8765/v1/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.STATUS_AGENT_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 8000,
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "format-status",
+      "name": "Format Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const report = $input.first().json || {};\nconst parsed = $(\"Parse Command\").first().json;\nconst chatId = parsed.chatId;\nlet text;\nif (report.ok === false || report.error) {\n  text = \"Status agent refused the call (\" + (report.error || \"error\") + \"). Check STATUS_AGENT_TOKEN and that the agent is listening on 127.0.0.1:8765.\";\n} else {\n  const load = report.load || {};\n  const disks = (report.disk || []).map((row) => {\n    const pct = row.used_percent === null || row.used_percent === undefined ? \"n/a\" : row.used_percent + \"%\";\n    return row.path + \" \" + pct + \" \" + row.status;\n  }).join(\"\\n\");\n  const services = (report.services || []).map((row) => row.name + \": \" + row.state).join(\"\\n\");\n  const acks = (report.acks || []).map((row) => row.id + \" at \" + row.at).join(\"\\n\");\n  text = [\n    \"Status \" + (report.host_label || \"host\"),\n    \"uptime \" + (report.uptime_human || report.uptime_seconds),\n    \"load \" + (load[\"1\"] ?? \"-\") + \" \" + (load[\"5\"] ?? \"-\") + \" \" + (load[\"15\"] ?? \"-\"),\n    disks || \"disk: none\",\n    services || \"services: none\",\n    acks ? \"acks:\\n\" + acks : \"acks: none\"\n  ].join(\"\\n\");\n}\nreturn [{ json: { chatId, text } }];\n"
+      }
+    },
+    {
+      "id": "format-help",
+      "name": "Format Help",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        640
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const parsed = $input.first().json;\nconst text = [\n  \"On-call commands in this lite workflow\",\n  \"/status  uptime, load, and disk\",\n  \"/help    this message\",\n  \"The full workflow adds /disk and /ack <id>.\"\n].join(\"\\n\");\nreturn [{ json: { chatId: parsed.chatId, text } }];\n"
+      }
+    },
+    {
+      "id": "format-unknown",
+      "name": "Format Unknown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        840
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const parsed = $input.first().json;\nreturn [{ json: { chatId: parsed.chatId, text: \"Unknown command. Send /help\" } }];\n"
+      }
+    },
+    {
+      "id": "reply",
+      "name": "Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1480,
+        360
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "PLACEHOLDER_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Command": {
+      "main": [
+        [
+          {
+            "node": "Route Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Status": {
+      "main": [
+        [
+          {
+            "node": "Format Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Status": {
+      "main": [
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Help": {
+      "main": [
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Unknown": {
+      "main": [
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Command": {
+      "main": [
+        [
+          {
+            "node": "Fetch Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Help",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Unknown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
