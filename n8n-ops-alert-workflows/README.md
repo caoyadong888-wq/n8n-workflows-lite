@@ -29,3 +29,8 @@ Full version: GUMROAD_URL
 完整版另外包含证书到期、HTTP 宕机、每日汇总、主机列表示例和安装说明。
 
 Full version: GUMROAD_URL
+
+## Delivery time / 交付时间
+
+- Lite (this repo): free, available now. / 精简版（本仓库）：免费，立即可用。
+- Full version: instant download after purchase (GUMROAD_URL). / 完整版：购买后即时下载（GUMROAD_URL）。
